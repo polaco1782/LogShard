@@ -31,7 +31,7 @@ pub struct Cli {
     pub output: OutputFormat,
 
     /// Maximum agent/tool round trips
-    #[arg(long, default_value_t = 12, value_parser = clap::value_parser!(u32).range(1..=64))]
+    #[arg(long, default_value_t = 16, value_parser = clap::value_parser!(u32).range(1..=64))]
     pub max_steps: u32,
 
     /// Maximum UTF-8 bytes printed from the model's final answer
