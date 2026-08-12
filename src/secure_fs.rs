@@ -5,7 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 
-fn ensure_private_directory(path: &Path) -> Result<()> {
+pub(crate) fn ensure_private_directory(path: &Path) -> Result<()> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
             bail!("{} is not a private directory", path.display());

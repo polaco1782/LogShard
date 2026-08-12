@@ -6,7 +6,7 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::paths;
-use crate::provider::{ProviderConfig, ProviderKind};
+use crate::provider::{ProviderConfig, ProviderKind, authenticate_copilot};
 use crate::secure_fs::{atomic_write_private, verify_private_file};
 
 const DEFAULT_TIMEOUT_SECONDS: u64 = 120;
@@ -28,7 +28,8 @@ pub struct ProviderSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key: Option<String>,
     pub model: String,
-    pub base_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -138,6 +139,7 @@ pub fn interactive_setup() -> Result<PathBuf> {
     println!("  1) OpenAI");
     println!("  2) OpenRouter");
     println!("  3) llama.cpp");
+    println!("  4) GitHub Copilot");
     let provider = ProviderKind::from_str(&prompt_value(
         &format!("Select provider [{default_provider}] > "),
         Some(&default_provider.to_string()),
@@ -146,31 +148,13 @@ pub fn interactive_setup() -> Result<PathBuf> {
         .as_ref()
         .filter(|config| config.provider.kind == provider);
 
-    let key_prompt = match (existing_provider, provider.requires_api_key()) {
-        (Some(_), true) => format!(
-            "{} API key (Enter keeps the current key) > ",
-            provider.display_name()
-        ),
-        (None, true) => format!("{} API key > ", provider.display_name()),
-        (Some(_), false) => format!(
-            "{} API key (optional; Enter keeps it, - clears it) > ",
-            provider.display_name()
-        ),
-        (None, false) => format!("{} API key (optional) > ", provider.display_name()),
-    };
-    let password_config = rpassword::ConfigBuilder::new()
-        .password_feedback_mask('*')
-        .build();
-    let entered_key = rpassword::prompt_password_with_config(key_prompt, password_config)
-        .context("could not read the API key")?;
-    let api_key = match (entered_key.trim(), existing_provider) {
-        ("-", _) if !provider.requires_api_key() => None,
-        ("", Some(config)) => config.provider.api_key.clone(),
-        ("", None) if provider.requires_api_key() => {
-            bail!("a {} API key is required", provider.display_name())
-        }
-        ("", None) => None,
-        (value, _) => Some(value.to_owned()),
+    let api_key = if provider == ProviderKind::GithubCopilot {
+        println!("Starting GitHub Copilot device authentication...");
+        authenticate_copilot()?;
+        println!("GitHub Copilot authentication complete.");
+        None
+    } else {
+        prompt_api_key(provider, existing_provider)?
     };
 
     let default_model = existing_provider.map_or(provider.default_model(), |config| {
@@ -180,16 +164,20 @@ pub fn interactive_setup() -> Result<PathBuf> {
         &format!("{} model [{default_model}] > ", provider.display_name()),
         Some(default_model),
     )?;
-    let default_base_url = existing_provider.map_or(provider.default_base_url(), |config| {
-        config.provider.base_url.as_str()
-    });
-    let base_url = prompt_value(
-        &format!(
-            "{} API base URL [{default_base_url}] > ",
-            provider.display_name()
-        ),
-        Some(default_base_url),
-    )?;
+    let base_url = if let Some(provider_default) = provider.default_base_url() {
+        let default_base_url = existing_provider
+            .and_then(|config| config.provider.base_url.as_deref())
+            .unwrap_or(provider_default);
+        Some(prompt_value(
+            &format!(
+                "{} API base URL [{default_base_url}] > ",
+                provider.display_name()
+            ),
+            Some(default_base_url),
+        )?)
+    } else {
+        None
+    };
 
     let config = Config {
         provider: ProviderSettings {
@@ -202,6 +190,46 @@ pub fn interactive_setup() -> Result<PathBuf> {
     };
     config.save_to(&path)?;
     Ok(path)
+}
+
+fn prompt_api_key(
+    provider: ProviderKind,
+    existing_provider: Option<&Config>,
+) -> Result<Option<String>> {
+    let credential_name = "API key";
+    let key_prompt = match (existing_provider, provider.requires_api_key()) {
+        (Some(_), true) => format!(
+            "{} {credential_name} (Enter keeps the current value) > ",
+            provider.display_name(),
+        ),
+        (None, true) => format!("{} {credential_name} > ", provider.display_name()),
+        (Some(_), false) => format!(
+            "{} {credential_name} (optional; Enter keeps it, - clears it) > ",
+            provider.display_name(),
+        ),
+        (None, false) => format!(
+            "{} {credential_name} (optional) > ",
+            provider.display_name()
+        ),
+    };
+    let password_config = rpassword::ConfigBuilder::new()
+        .password_feedback_mask('*')
+        .build();
+    let entered_key = rpassword::prompt_password_with_config(key_prompt, password_config)
+        .with_context(|| format!("could not read the {credential_name}"))?;
+    let api_key = match (entered_key.trim(), existing_provider) {
+        ("-", _) if !provider.requires_api_key() => None,
+        ("", Some(config)) => config.provider.api_key.clone(),
+        ("", None) if provider.requires_api_key() => {
+            bail!(
+                "a {} {credential_name} is required",
+                provider.display_name()
+            )
+        }
+        ("", None) => None,
+        (value, _) => Some(value.to_owned()),
+    };
+    Ok(api_key)
 }
 
 fn prompt_value(prompt: &str, default: Option<&str>) -> Result<String> {
@@ -241,7 +269,7 @@ mod tests {
                 kind: ProviderKind::Openrouter,
                 api_key: Some("secret-value".into()),
                 model: "openrouter/auto".into(),
-                base_url: "https://openrouter.ai/api/v1".into(),
+                base_url: Some("https://openrouter.ai/api/v1".into()),
             },
             generation: GenerationSettings::default(),
         }
@@ -290,6 +318,16 @@ base_url = "https://api.openai.com/v1"
         )
         .unwrap();
         assert!(missing_key.validate().is_err());
+
+        let missing_base_url = toml::from_str::<Config>(
+            r#"[provider]
+type = "openai"
+api_key = "secret"
+model = "gpt-5.6"
+"#,
+        )
+        .unwrap();
+        assert!(missing_base_url.validate().is_err());
     }
 
     #[test]
@@ -299,11 +337,29 @@ base_url = "https://api.openai.com/v1"
                 kind: ProviderKind::LlamaCpp,
                 api_key: None,
                 model: "local".into(),
-                base_url: "http://[::1]:8080/v1".into(),
+                base_url: Some("http://[::1]:8080/v1".into()),
             },
             generation: GenerationSettings::default(),
         };
         config.validate().unwrap();
+    }
+
+    #[test]
+    fn accepts_github_copilot_without_a_base_url() {
+        let config = Config {
+            provider: ProviderSettings {
+                kind: ProviderKind::GithubCopilot,
+                api_key: None,
+                model: "gpt-5.4".into(),
+                base_url: None,
+            },
+            generation: GenerationSettings::default(),
+        };
+
+        config.validate().unwrap();
+        let serialized = toml::to_string(&config).unwrap();
+        assert!(!serialized.contains("base_url"));
+        assert!(!serialized.contains("api_key"));
     }
 
     #[cfg(unix)]

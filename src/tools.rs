@@ -1,4 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use anyhow::{Result, anyhow, bail};
 use regex::RegexBuilder;
@@ -14,13 +17,14 @@ const MAX_SOURCE_RESULTS: usize = 500;
 const MAX_PATTERN_RESULTS: usize = 100;
 const MAX_TEXT_BYTES: usize = 2_048;
 
-pub struct ToolRegistry<'a> {
-    corpus: &'a Corpus,
+#[derive(Clone)]
+pub struct ToolRegistry {
+    corpus: Arc<Corpus>,
     max_result_bytes: usize,
 }
 
-impl<'a> ToolRegistry<'a> {
-    pub fn new(corpus: &'a Corpus, max_result_bytes: usize) -> Self {
+impl ToolRegistry {
+    pub fn new(corpus: Arc<Corpus>, max_result_bytes: usize) -> Self {
         Self {
             corpus,
             max_result_bytes,
@@ -526,7 +530,7 @@ mod tests {
         let (_file, corpus) = corpus(
             "2026-08-10T00:00:00Z ERROR request 123456 failed\ncontext\n2026-08-10T00:00:01Z ERROR request 789012 failed\n",
         );
-        let registry = ToolRegistry::new(&corpus, 64 * 1024);
+        let registry = ToolRegistry::new(corpus.into(), 64 * 1024);
         let output: Value = serde_json::from_str(&registry.execute(
             "search_logs",
             r#"{"pattern":"ERROR","regex":false,"case_sensitive":true,"max_results":10}"#,
@@ -547,7 +551,7 @@ mod tests {
     fn read_lines_uses_original_ranges_after_compaction() {
         let (file, corpus) = corpus("same\nsame\nnext\n");
         let source = file.path.display().to_string();
-        let registry = ToolRegistry::new(&corpus, 64 * 1024);
+        let registry = ToolRegistry::new(corpus.into(), 64 * 1024);
         let output: Value = serde_json::from_str(&registry.execute(
             "read_lines",
             &json!({"source": source, "start_line": 1, "line_count": 2}).to_string(),
@@ -560,7 +564,7 @@ mod tests {
     #[test]
     fn invalid_regex_is_a_recoverable_tool_error() {
         let (_file, corpus) = corpus("hello\n");
-        let registry = ToolRegistry::new(&corpus, 64 * 1024);
+        let registry = ToolRegistry::new(corpus.into(), 64 * 1024);
         let output: Value = serde_json::from_str(&registry.execute(
             "search_logs",
             r#"{"pattern":"(","regex":true,"case_sensitive":true,"max_results":10}"#,
@@ -576,7 +580,7 @@ mod tests {
             "x".repeat(3000),
             "y".repeat(3000)
         ));
-        let registry = ToolRegistry::new(&corpus, 1024);
+        let registry = ToolRegistry::new(corpus.into(), 1024);
         let output = registry.execute(
             "search_logs",
             r#"{"pattern":"alpha|beta","regex":true,"case_sensitive":true,"max_results":10}"#,

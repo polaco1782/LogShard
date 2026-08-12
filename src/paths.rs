@@ -6,6 +6,10 @@ pub fn config_file() -> Result<PathBuf> {
     Ok(platform_config_base()?.join("logshard").join("config.toml"))
 }
 
+pub(crate) fn copilot_home() -> Result<PathBuf> {
+    Ok(platform_config_base()?.join("logshard").join("copilot"))
+}
+
 #[cfg(windows)]
 fn platform_config_base() -> Result<PathBuf> {
     absolute_environment_path("LOCALAPPDATA").context(
@@ -35,7 +39,7 @@ fn absolute_environment_path(variable: &str) -> Option<PathBuf> {
 mod tests {
     use std::path::Path;
 
-    use super::config_file;
+    use super::{config_file, copilot_home};
 
     #[test]
     fn config_has_a_stable_central_path() {
@@ -43,6 +47,15 @@ mod tests {
             config_file()
                 .unwrap()
                 .ends_with(Path::new("logshard/config.toml"))
+        );
+    }
+
+    #[test]
+    fn copilot_has_an_app_scoped_home() {
+        assert!(
+            copilot_home()
+                .unwrap()
+                .ends_with(Path::new("logshard/copilot"))
         );
     }
 }

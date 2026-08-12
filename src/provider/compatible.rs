@@ -48,7 +48,7 @@ impl OpenAiCompatibleClient {
             "provider.request",
             serde_json::json!({
                 "provider": self.config.kind.to_string(),
-                "endpoint": self.config.endpoint.as_str(),
+                "endpoint": self.config.endpoint.as_ref().map(reqwest::Url::as_str),
                 "request": {
                     "model": request.model,
                     "message_count": request.messages.len(),
@@ -62,7 +62,12 @@ impl OpenAiCompatibleClient {
         );
         let mut builder = self
             .client
-            .post(self.config.endpoint.clone())
+            .post(
+                self.config
+                    .endpoint
+                    .clone()
+                    .context("OpenAI-compatible provider has no endpoint")?,
+            )
             .json(&request);
         if let Some(key) = &self.config.api_key {
             builder = builder.bearer_auth(key);
@@ -117,23 +122,21 @@ impl OpenAiCompatibleClient {
                 .tool_calls
                 .as_ref()
                 .is_none_or(|calls| calls.is_empty())
-        {
-            if let Some(call) = message
+            && let Some(call) = message
                 .content
                 .as_deref()
                 .and_then(|content| llama_cpp::content_tool_call(content, tools, messages.len()))
-            {
-                activity.emit(
-                    "provider.content_tool_call",
-                    serde_json::json!({
-                        "call_id": call.id,
-                        "name": call.function.name
-                    }),
-                );
-                message.content = None;
-                message.tool_calls = Some(vec![call]);
-                finish_reason = Some("tool_calls".to_owned());
-            }
+        {
+            activity.emit(
+                "provider.content_tool_call",
+                serde_json::json!({
+                    "call_id": call.id,
+                    "name": call.function.name
+                }),
+            );
+            message.content = None;
+            message.tool_calls = Some(vec![call]);
+            finish_reason = Some("tool_calls".to_owned());
         }
         Ok(ModelReply {
             message,

@@ -2,7 +2,7 @@
 
 LogShard is a Rust CLI for investigating large log sets without placing the entire input in an AI context window. It ingests and cleans logs locally, gives the model a small set of bounded read-only tools, and lets the model retrieve only the evidence needed for the investigation prompt.
 
-It supports OpenAI, OpenRouter, and a local `llama-server` from llama.cpp through one OpenAI-compatible Chat Completions tool loop.
+It supports OpenAI, OpenRouter, GitHub Copilot subscription models, and a local `llama-server` from llama.cpp. OpenAI-compatible providers use LogShard's Chat Completions loop; GitHub Copilot uses GitHub's official Copilot SDK with the same bounded local tools.
 
 ## How it works
 
@@ -30,7 +30,7 @@ Configure the upstream AI server first:
 logshard setup
 ```
 
-Setup interactively selects OpenAI, OpenRouter, or llama.cpp and asks for its API key, model, and base URL. It writes one private configuration file at `$XDG_CONFIG_HOME/logshard/config.toml`, falling back to `~/.config/logshard/config.toml` on Unix and `%LOCALAPPDATA%\logshard\config.toml` on Windows.
+Setup interactively selects OpenAI, OpenRouter, llama.cpp, or GitHub Copilot and asks for the applicable settings. It writes one private configuration file at `$XDG_CONFIG_HOME/logshard/config.toml`, falling back to `~/.config/logshard/config.toml` on Unix and `%LOCALAPPDATA%\logshard\config.toml` on Windows.
 
 Analyze one file:
 
@@ -71,6 +71,18 @@ logshard app.log \
 
 Choose llama.cpp during setup and accept its default `http://127.0.0.1:8080/v1` base URL, or enter the address exposed by your server. The selected model and chat template must support tool calling.
 
+Run with a GitHub Copilot subscription:
+
+```sh
+logshard setup
+logshard app.log \
+  --prompt 'Find the first error that caused the deployment rollback'
+```
+
+Choose GitHub Copilot during setup. LogShard starts GitHub's OAuth device flow and displays the verification URL and one-time code. Open the URL, enter the code, and authorize Copilot; setup waits for that authorization before asking for a model ID such as `gpt-5.4`. LogShard validates the configured model against the live model catalog before starting an investigation, so organization policy and account-specific availability are respected.
+
+The OAuth credential is kept in LogShard's private, app-scoped Copilot directory rather than in `config.toml`. The official Copilot runtime is bundled into LogShard at build time, so users do not need to install the `copilot` CLI separately. GitHub Copilot SDK support is currently a preview feature upstream and requires a GitHub Copilot subscription.
+
 The generated TOML has this shape:
 
 ```toml
@@ -85,7 +97,19 @@ timeout_seconds = 120
 max_output_tokens = 4096
 ```
 
-Valid provider types are `openai`, `openrouter`, and `llama_cpp`. `api_key` may be omitted for llama.cpp. Plain HTTP URLs are accepted only for loopback servers; remote providers must use HTTPS. The configuration directory and file are written with private permissions on Unix, and linked or group/world-readable configuration files are rejected.
+Valid provider types are `openai`, `openrouter`, `llama_cpp`, and `github_copilot`. `api_key` may be omitted for llama.cpp and must be omitted for the normal GitHub Copilot device-login flow. Plain HTTP URLs are accepted only for loopback servers; remote providers must use HTTPS. GitHub Copilot routing is managed by its SDK, so `base_url` must also be omitted for that provider:
+
+```toml
+[provider]
+type = "github_copilot"
+model = "gpt-5.4"
+
+[generation]
+timeout_seconds = 120
+max_output_tokens = 4096
+```
+
+The configuration directory and file are written with private permissions on Unix, and linked or group/world-readable configuration files are rejected.
 
 Provider settings are read only from this file. The former provider/model/base-URL/API-key command-line options and their environment-variable equivalents are not supported.
 
@@ -140,7 +164,7 @@ Debugging never changes plain or JSON output on standard output, so pipelines re
 - Common bearer tokens, API keys, access tokens, passwords, and secrets are redacted before any search result can reach a provider. Use `--no-redact-secrets` only when the investigation truly needs raw values.
 - Tool arguments, regular-expression size, result count, result bytes, input bytes, line bytes, HTTP duration, and agent steps are bounded.
 - Symlink inputs are not followed. Local tools are read-only and do not invoke a shell.
-- Using OpenAI or OpenRouter sends the selected excerpts and prompt to that provider. llama.cpp keeps inference local when its server is local.
+- Using OpenAI, OpenRouter, or GitHub Copilot sends the selected excerpts and prompt to that provider. The Copilot backend runs in the SDK's empty mode with only LogShard's five read-only tools; it cannot access the repository, shell, ambient instructions, SDK memory, or session persistence. llama.cpp keeps inference local when its server is local.
 
 ## Development
 

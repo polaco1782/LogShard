@@ -2,7 +2,7 @@ use anyhow::{Result, anyhow, bail};
 
 use crate::{
     debug::ActivityLog,
-    provider::{ChatMessage, OpenAiCompatibleClient},
+    provider::{ChatMessage, GithubCopilotClient, OpenAiCompatibleClient},
     tools::ToolRegistry,
 };
 
@@ -40,7 +40,7 @@ pub struct AgentResult {
 
 pub async fn investigate(
     client: &OpenAiCompatibleClient,
-    tools: &ToolRegistry<'_>,
+    tools: &ToolRegistry,
     prompt: &str,
     answer_format: AnswerFormat,
     max_steps: u32,
@@ -49,32 +49,26 @@ pub async fn investigate(
 ) -> Result<AgentResult> {
     let tool_definitions = ToolRegistry::definitions();
     let corpus_summary = tools.initial_summary();
+    let user_message = investigation_message(
+        prompt,
+        &corpus_summary,
+        answer_format,
+        max_answer_bytes,
+        max_steps,
+    );
     let mut messages = vec![
         ChatMessage::text("system", SYSTEM_PROMPT),
-        ChatMessage::text(
-            "user",
-            format!(
-                "Investigation request:\n{prompt}\n\nLocal corpus summary:\n{}\n\nUse the supplied tools to inspect only what you need. Keep the final answer under {max_answer_bytes} UTF-8 bytes. {}",
-                corpus_summary,
-                answer_format.instruction(),
-            ),
-        ),
+        ChatMessage::text("user", user_message),
     ];
     let mut total_tool_calls = 0_u32;
-    activity.emit(
-        "agent.start",
-        serde_json::json!({
-            "max_steps": max_steps,
-            "max_answer_bytes": max_answer_bytes,
-            "answer_format": match answer_format {
-                AnswerFormat::Plain => "plain",
-                AnswerFormat::Json => "json",
-            },
-            "available_tools": tool_definitions.len(),
-            "system_prompt": SYSTEM_PROMPT,
-            "investigation_prompt": prompt,
-            "corpus_summary": debug_json(&corpus_summary)
-        }),
+    emit_agent_start(
+        activity,
+        prompt,
+        &corpus_summary,
+        answer_format,
+        max_steps,
+        max_answer_bytes,
+        tool_definitions.len(),
     );
 
     for step in 1..=max_steps {
@@ -184,6 +178,98 @@ pub async fn investigate(
         }),
     );
     bail!("agent reached the configured {max_steps} step limit without a final answer")
+}
+
+pub async fn investigate_with_github_copilot(
+    client: &GithubCopilotClient,
+    tools: &ToolRegistry,
+    prompt: &str,
+    answer_format: AnswerFormat,
+    max_steps: u32,
+    max_answer_bytes: usize,
+    activity: &ActivityLog,
+) -> Result<AgentResult> {
+    let corpus_summary = tools.initial_summary();
+    let user_message = investigation_message(
+        prompt,
+        &corpus_summary,
+        answer_format,
+        max_answer_bytes,
+        max_steps,
+    );
+    emit_agent_start(
+        activity,
+        prompt,
+        &corpus_summary,
+        answer_format,
+        max_steps,
+        max_answer_bytes,
+        ToolRegistry::definitions().len(),
+    );
+    let result = client
+        .run(
+            SYSTEM_PROMPT,
+            &user_message,
+            tools.clone(),
+            max_steps,
+            activity,
+        )
+        .await?;
+    let (answer, answer_truncated) = limit_answer(&result.answer, max_answer_bytes);
+    activity.emit(
+        "agent.complete",
+        serde_json::json!({
+            "step": result.steps,
+            "tool_calls": result.tool_calls,
+            "answer": answer,
+            "answer_truncated": answer_truncated
+        }),
+    );
+    Ok(AgentResult {
+        answer,
+        answer_truncated,
+        tool_calls: result.tool_calls,
+        steps: result.steps,
+    })
+}
+
+fn investigation_message(
+    prompt: &str,
+    corpus_summary: &str,
+    answer_format: AnswerFormat,
+    max_answer_bytes: usize,
+    max_steps: u32,
+) -> String {
+    format!(
+        "Investigation request:\n{prompt}\n\nLocal corpus summary:\n{corpus_summary}\n\nUse the supplied tools to inspect only what you need. Complete the investigation within {max_steps} model/tool steps. Keep the final answer under {max_answer_bytes} UTF-8 bytes. {}",
+        answer_format.instruction(),
+    )
+}
+
+fn emit_agent_start(
+    activity: &ActivityLog,
+    prompt: &str,
+    corpus_summary: &str,
+    answer_format: AnswerFormat,
+    max_steps: u32,
+    max_answer_bytes: usize,
+    available_tools: usize,
+) {
+    activity.emit(
+        "agent.start",
+        serde_json::json!({
+            "max_steps": max_steps,
+            "max_answer_bytes": max_answer_bytes,
+            "answer_format": match answer_format {
+                AnswerFormat::Plain => "plain",
+                AnswerFormat::Json => "json",
+            },
+            "available_tools": available_tools,
+            "system_prompt": SYSTEM_PROMPT,
+            "investigation_prompt": prompt,
+            "corpus_summary": debug_json(corpus_summary)
+        }),
+    );
 }
 
 fn debug_json(value: &str) -> serde_json::Value {
@@ -368,13 +454,13 @@ mod tests {
         let provider = OpenAiCompatibleClient::new(ProviderConfig {
             kind: ProviderKind::LlamaCpp,
             model: "mock".to_owned(),
-            endpoint: Url::parse(&format!("http://{address}/v1/chat/completions")).unwrap(),
+            endpoint: Some(Url::parse(&format!("http://{address}/v1/chat/completions")).unwrap()),
             api_key: None,
             timeout: Duration::from_secs(5),
             max_output_tokens: 2048,
         })
         .unwrap();
-        let tools = ToolRegistry::new(&corpus, 64 * 1024);
+        let tools = ToolRegistry::new(corpus.into(), 64 * 1024);
 
         let result = investigate(
             &provider,

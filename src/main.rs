@@ -1,4 +1,4 @@
-use std::{fs, io, path::Path};
+use std::{fs, io, path::Path, sync::Arc};
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;
@@ -8,7 +8,7 @@ use logshard::{
     config::{self, Config},
     corpus::{Corpus, IngestOptions},
     debug::ActivityLog,
-    provider::{OpenAiCompatibleClient, ProviderConfig},
+    provider::{GithubCopilotClient, OpenAiCompatibleClient, ProviderConfig, ProviderKind},
     tools::ToolRegistry,
     ui::ActivityIndicator,
 };
@@ -43,32 +43,46 @@ async fn run() -> Result<()> {
         provider_config.api_key.as_deref(),
         cli.debug_max_text_bytes,
     );
-    let corpus = Corpus::ingest(
+    let corpus = Arc::new(Corpus::ingest(
         &cli.inputs,
         IngestOptions {
             max_input_bytes: cli.max_input_bytes,
             max_line_bytes: cli.max_line_bytes,
             redact_secrets: !cli.no_redact_secrets,
         },
-    )?;
+    )?);
     activity.emit("corpus.ingested", corpus.stats());
-    let client = OpenAiCompatibleClient::new(provider_config)?;
-    let tools = ToolRegistry::new(&corpus, cli.max_tool_bytes);
+    let tools = ToolRegistry::new(corpus.clone(), cli.max_tool_bytes);
     let answer_format = match cli.output {
         OutputFormat::Plain => agent::AnswerFormat::Plain,
         OutputFormat::Json => agent::AnswerFormat::Json,
     };
     let indicator = ActivityIndicator::start("Analyzing logs", !cli.debug);
-    let investigation = agent::investigate(
-        &client,
-        &tools,
-        &prompt,
-        answer_format,
-        cli.max_steps,
-        cli.max_answer_bytes,
-        &activity,
-    )
-    .await;
+    let investigation = if provider_config.kind == ProviderKind::GithubCopilot {
+        let client = GithubCopilotClient::new(provider_config.clone())?;
+        agent::investigate_with_github_copilot(
+            &client,
+            &tools,
+            &prompt,
+            answer_format,
+            cli.max_steps,
+            cli.max_answer_bytes,
+            &activity,
+        )
+        .await
+    } else {
+        let client = OpenAiCompatibleClient::new(provider_config.clone())?;
+        agent::investigate(
+            &client,
+            &tools,
+            &prompt,
+            answer_format,
+            cli.max_steps,
+            cli.max_answer_bytes,
+            &activity,
+        )
+        .await
+    };
     drop(indicator);
     let result = investigation?;
 
@@ -84,8 +98,8 @@ async fn run() -> Result<()> {
             let output = JsonOutput {
                 answer: parse_json_answer(&result.answer)?,
                 answer_truncated: result.answer_truncated,
-                provider: client.config().kind,
-                model: &client.config().model,
+                provider: provider_config.kind,
+                model: &provider_config.model,
                 tool_calls: result.tool_calls,
                 steps: result.steps,
                 corpus: corpus.stats(),
