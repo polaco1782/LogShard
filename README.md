@@ -4,6 +4,8 @@ LogShard is a Rust CLI for investigating large log sets without placing the enti
 
 It supports OpenAI, OpenRouter, GitHub Copilot subscription models, and a local `llama-server` from llama.cpp. OpenAI-compatible providers use LogShard's Chat Completions loop; GitHub Copilot uses GitHub's official Copilot SDK with the same bounded local tools.
 
+![LogShard terminal demo](logshard-demo.gif)
+
 ## How it works
 
 1. LogShard recursively ingests regular files or reads logs from standard input.
@@ -16,11 +18,19 @@ Search results group repeated patterns whose timestamps, UUIDs, IP addresses, lo
 
 ## Build
 
+LogShard requires Rust 1.94 or newer.
+
 ```sh
 cargo build --release --locked
 ```
 
 The binary is written to `target/release/logshard`.
+
+To install it in Cargo's binary directory instead:
+
+```sh
+cargo install --path . --locked
+```
 
 ## Usage
 
@@ -173,3 +183,7 @@ cargo fmt --all -- --check
 cargo clippy --all-targets --all-features --offline -- -D warnings
 cargo test --all-targets --offline
 ```
+
+## License
+
+LogShard is available under the [MIT License](LICENSE).
