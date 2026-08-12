@@ -24,21 +24,25 @@ The binary is written to `target/release/logshard`.
 
 ## Usage
 
-Analyze one file with OpenAI:
+Configure the upstream AI server first:
 
 ```sh
-export OPENAI_API_KEY='...'
+logshard setup
+```
+
+Setup interactively selects OpenAI, OpenRouter, or llama.cpp and asks for its API key, model, and base URL. It writes one private configuration file at `$XDG_CONFIG_HOME/logshard/config.toml`, falling back to `~/.config/logshard/config.toml` on Unix and `%LOCALAPPDATA%\logshard\config.toml` on Windows.
+
+Analyze one file:
+
+```sh
 logshard service.log \
   --prompt 'Find the root cause of the last failed startup and cite the evidence'
 ```
 
-Analyze a directory with OpenRouter and return JSON:
+Analyze a directory and return JSON:
 
 ```sh
-export OPENROUTER_API_KEY='...'
 logshard ./logs \
-  --provider openrouter \
-  --model openai/gpt-5.6 \
   --prompt-file investigation.txt \
   --output json
 ```
@@ -60,28 +64,36 @@ llama-server \
   --host 127.0.0.1 \
   --port 8080
 
+logshard setup
 logshard app.log \
-  --provider llama-cpp \
-  --model local \
   --prompt 'Find memory exhaustion evidence'
 ```
 
-The selected llama.cpp model and chat template must support tool calling. If the server uses a different alias or address, set `--model` and `--base-url` accordingly.
+Choose llama.cpp during setup and accept its default `http://127.0.0.1:8080/v1` base URL, or enter the address exposed by your server. The selected model and chat template must support tool calling.
 
-Run `logshard --help` for ingestion and tool-size limits. Important environment variables are:
+The generated TOML has this shape:
 
-| Setting | CLI option | Environment |
-| --- | --- | --- |
-| Provider | `--provider` | `LOGSHARD_PROVIDER` |
-| Model | `--model` | `LOGSHARD_MODEL` |
-| Base URL | `--base-url` | `LOGSHARD_BASE_URL` |
-| Generic API key | `--api-key` | `LOGSHARD_API_KEY` |
-| OpenAI API key | — | `OPENAI_API_KEY` |
-| OpenRouter API key | — | `OPENROUTER_API_KEY` |
+```toml
+[provider]
+type = "openai"
+api_key = "..."
+model = "gpt-5.6"
+base_url = "https://api.openai.com/v1"
 
-`LOGSHARD_API_KEY` takes precedence over the provider-specific key. Plain HTTP provider URLs are accepted only for loopback hosts; remote providers must use HTTPS.
+[generation]
+timeout_seconds = 120
+max_output_tokens = 4096
+```
 
-Each provider response is capped at 4096 generated tokens by default. Because that token budget also covers non-visible reasoning and message structure, the final visible answer has a separate 8192-byte hard limit. Adjust these independently with `--max-output-tokens` and `--max-answer-bytes`.
+Valid provider types are `openai`, `openrouter`, and `llama_cpp`. `api_key` may be omitted for llama.cpp. Plain HTTP URLs are accepted only for loopback servers; remote providers must use HTTPS. The configuration directory and file are written with private permissions on Unix, and linked or group/world-readable configuration files are rejected.
+
+Provider settings are read only from this file. The former provider/model/base-URL/API-key command-line options and their environment-variable equivalents are not supported.
+
+Each provider response is capped at 4096 generated tokens by default. Because that token budget also covers non-visible reasoning and message structure, the final visible answer has a separate 8192-byte hard limit. Edit `generation.max_output_tokens` in the TOML file and use `--max-answer-bytes` to adjust these independently.
+
+Run `logshard --help` for ingestion and tool-size limits.
+
+While the model is working, interactive terminals show an in-place spinner with elapsed time on standard error. It is disabled when standard error is redirected or `--debug` is active, so JSON output and pipelines remain clean.
 
 ## Debugging AI activity
 
@@ -95,11 +107,14 @@ Debugging never changes plain or JSON output on standard output, so pipelines re
 
 ## JSON output
 
-`--output json` always emits valid JSON even when a provider only supports plain text completions:
+`--output json` instructs the model to return a bare JSON object without Markdown fences or surrounding prose, then emits it inside LogShard's stable JSON envelope:
 
 ```json
 {
-  "answer": "The startup failed after ...",
+  "answer": {
+    "summary": "The startup failed after ...",
+    "evidence": ["service.log:42"]
+  },
   "answer_truncated": false,
   "provider": "openai",
   "model": "gpt-5.6",

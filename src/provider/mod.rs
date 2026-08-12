@@ -3,17 +3,16 @@ mod llama_cpp;
 mod openai;
 mod openrouter;
 
-use std::{env, fmt, net::IpAddr, time::Duration};
+use std::{fmt, net::IpAddr, str::FromStr, time::Duration};
 
 use anyhow::{Context, Result, bail};
-use clap::ValueEnum;
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 pub use compatible::OpenAiCompatibleClient;
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, ValueEnum)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderKind {
     Openai,
@@ -31,6 +30,49 @@ impl fmt::Display for ProviderKind {
     }
 }
 
+impl FromStr for ProviderKind {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "1" | "openai" => Ok(Self::Openai),
+            "2" | "openrouter" => Ok(Self::Openrouter),
+            "3" | "llama.cpp" | "llama-cpp" | "llama_cpp" => Ok(Self::LlamaCpp),
+            _ => bail!("unsupported provider {value:?}; expected openai, openrouter, or llama_cpp"),
+        }
+    }
+}
+
+impl ProviderKind {
+    pub const fn display_name(self) -> &'static str {
+        match self {
+            Self::Openai => "OpenAI",
+            Self::Openrouter => "OpenRouter",
+            Self::LlamaCpp => "llama.cpp",
+        }
+    }
+
+    pub(crate) fn default_model(self) -> &'static str {
+        self.defaults().model
+    }
+
+    pub(crate) fn default_base_url(self) -> &'static str {
+        self.defaults().base_url
+    }
+
+    pub(crate) fn requires_api_key(self) -> bool {
+        self.defaults().api_key_required
+    }
+
+    fn defaults(self) -> ProviderDefaults {
+        match self {
+            Self::Openai => openai::defaults(),
+            Self::Openrouter => openrouter::defaults(),
+            Self::LlamaCpp => llama_cpp::defaults(),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ProviderConfig {
     pub kind: ProviderKind,
@@ -42,36 +84,32 @@ pub struct ProviderConfig {
 }
 
 impl ProviderConfig {
-    pub fn resolve(
+    pub fn new(
         kind: ProviderKind,
-        model: Option<String>,
-        base_url: Option<String>,
+        model: String,
+        base_url: String,
         api_key: Option<String>,
         timeout_seconds: u64,
         max_output_tokens: u32,
     ) -> Result<Self> {
-        let defaults = match kind {
-            ProviderKind::Openai => openai::defaults(),
-            ProviderKind::Openrouter => openrouter::defaults(),
-            ProviderKind::LlamaCpp => llama_cpp::defaults(),
-        };
-
-        let model = nonempty(model.unwrap_or_else(|| defaults.model.to_owned()), "model")?;
-        let base_url = base_url.unwrap_or_else(|| defaults.base_url.to_owned());
+        let model = nonempty(model, "provider.model")?;
+        if model.chars().any(char::is_whitespace) {
+            bail!("provider.model must not contain whitespace");
+        }
         let endpoint = completion_endpoint(&base_url)?;
-        let api_key = api_key
-            .or_else(|| defaults.api_key_env.and_then(|name| env::var(name).ok()))
-            .and_then(|value| {
-                let trimmed = value.trim().to_owned();
-                (!trimmed.is_empty()).then_some(trimmed)
-            });
+        let api_key = api_key.and_then(|value| {
+            let trimmed = value.trim().to_owned();
+            (!trimmed.is_empty()).then_some(trimmed)
+        });
 
-        if defaults.api_key_required && api_key.is_none() {
-            bail!(
-                "{} requires an API key; pass --api-key or set {}",
-                kind,
-                defaults.api_key_env.unwrap_or("LOGSHARD_API_KEY")
-            );
+        if kind.requires_api_key() && api_key.is_none() {
+            bail!("provider.api_key is required for {kind}");
+        }
+        if api_key
+            .as_deref()
+            .is_some_and(|key| key.chars().any(char::is_control))
+        {
+            bail!("provider.api_key must not contain control characters");
         }
 
         Ok(Self {
@@ -88,7 +126,6 @@ impl ProviderConfig {
 pub(crate) struct ProviderDefaults {
     pub model: &'static str,
     pub base_url: &'static str,
-    pub api_key_env: Option<&'static str>,
     pub api_key_required: bool,
 }
 
@@ -149,8 +186,9 @@ pub struct ModelReply {
 }
 
 fn completion_endpoint(base_url: &str) -> Result<Url> {
-    let base_url = nonempty(base_url.to_owned(), "base URL")?;
-    let parsed = Url::parse(&base_url).with_context(|| format!("invalid base URL: {base_url}"))?;
+    let base_url = nonempty(base_url.to_owned(), "provider.base_url")?;
+    let parsed =
+        Url::parse(&base_url).with_context(|| format!("invalid provider.base_url: {base_url}"))?;
 
     if !parsed.username().is_empty() || parsed.password().is_some() {
         bail!("base URL must not contain credentials");

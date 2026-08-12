@@ -4,13 +4,16 @@ use anyhow::{Context, Result, bail};
 use clap::Parser;
 use logshard::{
     agent,
-    cli::{Cli, OutputFormat},
+    cli::{Cli, Command, OutputFormat},
+    config::{self, Config},
     corpus::{Corpus, IngestOptions},
     debug::ActivityLog,
     provider::{OpenAiCompatibleClient, ProviderConfig},
     tools::ToolRegistry,
+    ui::ActivityIndicator,
 };
 use serde::Serialize;
+use serde_json::Value;
 
 const MAX_PROMPT_BYTES: usize = 256 * 1024;
 
@@ -24,15 +27,17 @@ async fn main() {
 
 async fn run() -> Result<()> {
     let cli = Cli::parse();
+    if matches!(cli.command, Some(Command::Setup)) {
+        let path = config::interactive_setup()?;
+        println!("Configuration saved to {}", path.display());
+        return Ok(());
+    }
+
+    if cli.inputs.is_empty() {
+        bail!("at least one log input is required");
+    }
     let prompt = load_prompt(&cli)?;
-    let provider_config = ProviderConfig::resolve(
-        cli.provider,
-        cli.model,
-        cli.base_url,
-        cli.api_key,
-        cli.timeout_seconds,
-        cli.max_output_tokens,
-    )?;
+    let provider_config: ProviderConfig = Config::load()?.provider_config()?;
     let activity = ActivityLog::new(
         cli.debug,
         provider_config.api_key.as_deref(),
@@ -49,21 +54,35 @@ async fn run() -> Result<()> {
     activity.emit("corpus.ingested", corpus.stats());
     let client = OpenAiCompatibleClient::new(provider_config)?;
     let tools = ToolRegistry::new(&corpus, cli.max_tool_bytes);
-    let result = agent::investigate(
+    let answer_format = match cli.output {
+        OutputFormat::Plain => agent::AnswerFormat::Plain,
+        OutputFormat::Json => agent::AnswerFormat::Json,
+    };
+    let indicator = ActivityIndicator::start("Analyzing logs", !cli.debug);
+    let investigation = agent::investigate(
         &client,
         &tools,
         &prompt,
+        answer_format,
         cli.max_steps,
         cli.max_answer_bytes,
         &activity,
     )
-    .await?;
+    .await;
+    drop(indicator);
+    let result = investigation?;
 
     match cli.output {
         OutputFormat::Plain => println!("{}", result.answer),
         OutputFormat::Json => {
+            if result.answer_truncated {
+                bail!(
+                    "model's JSON answer exceeded the {}-byte limit; increase --max-answer-bytes",
+                    cli.max_answer_bytes
+                );
+            }
             let output = JsonOutput {
-                answer: &result.answer,
+                answer: parse_json_answer(&result.answer)?,
                 answer_truncated: result.answer_truncated,
                 provider: client.config().kind,
                 model: &client.config().model,
@@ -79,13 +98,22 @@ async fn run() -> Result<()> {
     Ok(())
 }
 
+fn parse_json_answer(answer: &str) -> Result<Value> {
+    let answer: Value =
+        serde_json::from_str(answer).context("model returned invalid JSON for --output json")?;
+    if !answer.is_object() {
+        bail!("model returned a JSON value instead of the required JSON object");
+    }
+    Ok(answer)
+}
+
 fn load_prompt(cli: &Cli) -> Result<String> {
     let prompt = if let Some(prompt) = &cli.prompt {
         prompt.clone()
     } else if let Some(path) = &cli.prompt_file {
         read_prompt_file(path)?
     } else {
-        unreachable!("clap requires an investigation instruction")
+        bail!("an investigation instruction is required; use --prompt or --prompt-file")
     };
     let prompt = prompt.trim().to_owned();
     if prompt.is_empty() {
@@ -112,11 +140,48 @@ fn read_prompt_file(path: &Path) -> Result<String> {
 
 #[derive(Serialize)]
 struct JsonOutput<'a> {
-    answer: &'a str,
+    answer: Value,
     answer_truncated: bool,
     provider: logshard::provider::ProviderKind,
     model: &'a str,
     tool_calls: u32,
     steps: u32,
     corpus: &'a logshard::corpus::CorpusStats,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use logshard::{corpus::CorpusStats, provider::ProviderKind};
+    use serde_json::json;
+
+    #[test]
+    fn json_output_embeds_the_model_answer_as_an_object() {
+        let stats = CorpusStats::default();
+        let output = JsonOutput {
+            answer: parse_json_answer(r#"{"summary":"failed","warnings":[]}"#).unwrap(),
+            answer_truncated: false,
+            provider: ProviderKind::Openai,
+            model: "test-model",
+            tool_calls: 1,
+            steps: 2,
+            corpus: &stats,
+        };
+
+        let serialized = serde_json::to_value(output).unwrap();
+
+        assert_eq!(
+            serialized["answer"],
+            json!({
+                "summary": "failed",
+                "warnings": []
+            })
+        );
+    }
+
+    #[test]
+    fn json_output_rejects_non_object_answers() {
+        assert!(parse_json_answer(r#"["failure"]"#).is_err());
+        assert!(parse_json_answer("not JSON").is_err());
+    }
 }

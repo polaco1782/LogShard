@@ -3,7 +3,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{ChatMessage, ModelReply, ProviderConfig, ProviderKind};
+use super::{ChatMessage, ModelReply, ProviderConfig, ProviderKind, llama_cpp};
 use crate::debug::ActivityLog;
 
 pub struct OpenAiCompatibleClient {
@@ -110,9 +110,34 @@ impl OpenAiCompatibleClient {
             .into_iter()
             .next()
             .ok_or_else(|| anyhow!("provider returned no completion choices"))?;
+        let mut message = choice.message;
+        let mut finish_reason = choice.finish_reason;
+        if self.config.kind == ProviderKind::LlamaCpp
+            && message
+                .tool_calls
+                .as_ref()
+                .is_none_or(|calls| calls.is_empty())
+        {
+            if let Some(call) = message
+                .content
+                .as_deref()
+                .and_then(|content| llama_cpp::content_tool_call(content, tools, messages.len()))
+            {
+                activity.emit(
+                    "provider.content_tool_call",
+                    serde_json::json!({
+                        "call_id": call.id,
+                        "name": call.function.name
+                    }),
+                );
+                message.content = None;
+                message.tool_calls = Some(vec![call]);
+                finish_reason = Some("tool_calls".to_owned());
+            }
+        }
         Ok(ModelReply {
-            message: choice.message,
-            finish_reason: choice.finish_reason,
+            message,
+            finish_reason,
         })
     }
 }

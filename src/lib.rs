@@ -1,6 +1,10 @@
 pub mod agent;
 pub mod cli;
+pub mod config;
 pub mod corpus;
 pub mod debug;
+mod paths;
 pub mod provider;
+mod secure_fs;
 pub mod tools;
+pub mod ui;
