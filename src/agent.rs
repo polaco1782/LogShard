@@ -325,10 +325,14 @@ mod tests {
 
     impl TestFile {
         fn new(contents: &str) -> Self {
+            let test_name = std::thread::current()
+                .name()
+                .unwrap_or("test")
+                .replace("::", "-");
             let path = std::env::temp_dir().join(format!(
                 "logshard-agent-{}-{}.log",
                 std::process::id(),
-                std::thread::current().name().unwrap_or("test")
+                test_name
             ));
             let mut file = std::fs::File::create(&path).unwrap();
             file.write_all(contents.as_bytes()).unwrap();
