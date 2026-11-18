@@ -129,6 +129,27 @@ Run `logshard --help` for ingestion and tool-size limits.
 
 While the model is working, interactive terminals show an in-place spinner with elapsed time on standard error. It is disabled when standard error is redirected or `--debug` is active, so JSON output and pipelines remain clean.
 
+### Private HTTPS proxies and additional CA trust
+
+An OpenAI-compatible proxy uses `type = "openai"` with its HTTPS `base_url`, model and API key. For a proxy signed by a private CA, add `provider.ca_cert_pem` as a TOML multiline string containing the public CA certificate(s):
+
+```toml
+[provider]
+type = "openai"
+model = "your-model"
+base_url = "https://proxy.example.internal/v1"
+api_key = "..."
+ca_cert_pem = """
+-----BEGIN CERTIFICATE-----
+...your trusted CA certificate, not a private key...
+-----END CERTIFICATE-----
+"""
+```
+
+When present, this bundle **replaces** the built-in root trust for this provider's HTTP client only. It does not modify OS trust, other providers, or GitHub Copilot's SDK. TLS chain, expiry and hostname/IP verification remain enabled, and redirects are not followed. Use the actual trusted CA supplied by your administrator, not a certificate fetched from an unverified endpoint. Without this setting, existing default trust behavior is unchanged.
+
+The bundle must be nonempty PEM, at most 256 KiB, and contain no private key. It is rejected for plain HTTP and `github_copilot`. Integrators such as JirAIya can copy the selected proxy profile's CA into the isolated per-run TOML; no additional global certificate installation or verification bypass is needed. Existing `setup` preserves the CA setting for the same provider.
+
 ## Debugging AI activity
 
 Pass `--debug` to write every AI activity event as readable, pretty-printed JSON to standard error. The trace includes the prompt and corpus summary, provider request metadata and model responses, agent steps, tool arguments, tool results, and the final answer. Static tool schemas and accumulated conversation history are summarized instead of repeated on every request:

@@ -1,6 +1,6 @@
 [package]
 name = "logshard"
-version = "0.1.0"
+version = "1.0.2"
 edition = "2024"
 rust-version = "1.94"
 description = "Token-efficient, AI-guided log analysis"
@@ -21,6 +21,7 @@ tokio = { version = "1.47", features = ["macros", "rt-multi-thread"] }
 toml = "1.1"
 
 [dev-dependencies]
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 tokio = { version = "1.47", features = ["macros", "rt-multi-thread", "net", "io-util"] }
 
 [profile.release]

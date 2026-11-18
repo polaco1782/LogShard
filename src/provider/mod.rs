@@ -91,9 +91,47 @@ pub struct ProviderConfig {
     pub api_key: Option<String>,
     pub timeout: Duration,
     pub max_output_tokens: u32,
+    pub(crate) ca_certificates: Vec<reqwest::Certificate>,
 }
 
 impl ProviderConfig {
+    /// Add trust only to this provider, never to the OS or other SDK clients.
+    pub fn with_ca_cert_pem(mut self, pem: Option<String>) -> Result<Self> {
+        if let Some(pem) = pem {
+            if self.kind == ProviderKind::GithubCopilot {
+                bail!("provider.ca_cert_pem is not supported for github_copilot");
+            }
+            if self
+                .endpoint
+                .as_ref()
+                .is_none_or(|url| url.scheme() != "https")
+            {
+                bail!("provider.ca_cert_pem requires an HTTPS provider.base_url");
+            }
+            if pem.len() > 256 * 1024 {
+                bail!("provider.ca_cert_pem exceeds 256 KiB");
+            }
+            if pem.contains("PRIVATE KEY") {
+                bail!("provider.ca_cert_pem must contain public certificates, not private keys");
+            }
+            let mut remaining = pem.trim();
+            while !remaining.is_empty() {
+                if !remaining.starts_with("-----BEGIN CERTIFICATE-----") {
+                    bail!("provider.ca_cert_pem must contain only PEM certificates");
+                }
+                let end = remaining
+                    .find("-----END CERTIFICATE-----")
+                    .context("provider.ca_cert_pem contains an incomplete certificate")?;
+                remaining = remaining[end + "-----END CERTIFICATE-----".len()..].trim();
+            }
+            self.ca_certificates = reqwest::Certificate::from_pem_bundle(pem.as_bytes())
+                .context("provider.ca_cert_pem must be a valid PEM certificate bundle")?;
+            if self.ca_certificates.is_empty() {
+                bail!("provider.ca_cert_pem must contain at least one PEM certificate");
+            }
+        }
+        Ok(self)
+    }
     pub fn new(
         kind: ProviderKind,
         model: String,
@@ -145,6 +183,7 @@ impl ProviderConfig {
             api_key,
             timeout: Duration::from_secs(timeout_seconds),
             max_output_tokens,
+            ca_certificates: Vec::new(),
         })
     }
 }

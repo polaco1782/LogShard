@@ -462,6 +462,7 @@ mod tests {
             api_key: None,
             timeout: Duration::from_secs(5),
             max_output_tokens: 2048,
+            ca_certificates: Vec::new(),
         })
         .unwrap();
         let tools = ToolRegistry::new(corpus.into(), 64 * 1024);

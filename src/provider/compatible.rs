@@ -13,10 +13,16 @@ pub struct OpenAiCompatibleClient {
 
 impl OpenAiCompatibleClient {
     pub fn new(config: ProviderConfig) -> Result<Self> {
-        let client = Client::builder()
+        let mut builder = Client::builder()
             .timeout(config.timeout)
-            .build()
-            .context("failed to construct HTTP client")?;
+            .redirect(reqwest::redirect::Policy::none());
+        if !config.ca_certificates.is_empty() {
+            builder = builder.tls_built_in_root_certs(false);
+        }
+        for certificate in &config.ca_certificates {
+            builder = builder.add_root_certificate(certificate.clone());
+        }
+        let client = builder.build().context("failed to construct HTTP client")?;
         Ok(Self { config, client })
     }
 

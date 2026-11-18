@@ -30,6 +30,9 @@ pub struct ProviderSettings {
     pub model: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
+    /// Exclusive trusted CA bundle for this provider only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ca_cert_pem: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -101,7 +104,8 @@ impl Config {
             self.provider.api_key.clone(),
             self.generation.timeout_seconds,
             self.generation.max_output_tokens,
-        )
+        )?
+        .with_ca_cert_pem(self.provider.ca_cert_pem.clone())
     }
 
     pub fn save_to(&self, path: &Path) -> Result<()> {
@@ -185,6 +189,7 @@ pub fn interactive_setup() -> Result<PathBuf> {
             api_key,
             model,
             base_url,
+            ca_cert_pem: existing_provider.and_then(|config| config.provider.ca_cert_pem.clone()),
         },
         generation: existing.map(|config| config.generation).unwrap_or_default(),
     };
@@ -257,6 +262,7 @@ const fn default_max_output_tokens() -> u32 {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use std::fs;
 
     use tempfile::tempdir;
@@ -269,12 +275,23 @@ mod tests {
                 kind: ProviderKind::Openrouter,
                 api_key: Some("secret-value".into()),
                 model: "openrouter/auto".into(),
+                ca_cert_pem: None,
                 base_url: Some("https://openrouter.ai/api/v1".into()),
             },
             generation: GenerationSettings::default(),
         }
     }
 
+    #[test]
+    fn preserves_ca_bundle_when_saving_and_loading() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        let mut original = config();
+        original.provider.ca_cert_pem = Some(include_str!("../tests/fixtures/test-ca.pem").into());
+        original.save_to(&path).unwrap();
+        let loaded = Config::load_from(&path).unwrap();
+        assert_eq!(loaded.provider.ca_cert_pem, original.provider.ca_cert_pem);
+    }
     #[test]
     fn saves_and_loads_a_private_config() {
         let directory = tempdir().unwrap();
@@ -337,6 +354,7 @@ model = "gpt-5.6"
                 kind: ProviderKind::LlamaCpp,
                 api_key: None,
                 model: "local".into(),
+                ca_cert_pem: None,
                 base_url: Some("http://[::1]:8080/v1".into()),
             },
             generation: GenerationSettings::default(),
@@ -351,6 +369,7 @@ model = "gpt-5.6"
                 kind: ProviderKind::GithubCopilot,
                 api_key: None,
                 model: "gpt-5.4".into(),
+                ca_cert_pem: None,
                 base_url: None,
             },
             generation: GenerationSettings::default(),
