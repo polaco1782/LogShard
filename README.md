@@ -150,6 +150,18 @@ When present, this bundle **replaces** the built-in root trust for this provider
 
 The bundle must be nonempty PEM, at most 256 KiB, and contain no private key. It is rejected for plain HTTP and `github_copilot`. Integrators such as JirAIya can copy the selected proxy profile's CA into the isolated per-run TOML; no additional global certificate installation or verification bypass is needed. Existing `setup` preserves the CA setting for the same provider.
 
+### ChatGPT-plan reverse adapters (Responses API)
+
+Some subscription-backed reverse adapters reject Chat Completions function-calling parameters. For an OpenAI profile connected to such an adapter, explicitly set:
+
+```toml
+responses_api = true
+```
+
+Place this field in `[provider]`, alongside `base_url`, the adapter-local `api_key`, and its `ca_cert_pem`. LogShard then uses `/v1/responses` with streaming SSE, `store = false`, namespaced bounded read-only log tools, and stateless replay of tool results and encrypted reasoning. It does not remove the investigation tools or forward the entire log corpus as a workaround. Unsupported Chat Completions fields and token-limit fields are not sent; the backend controls its completion budget in this mode, while local step, tool-result and final-answer limits still apply.
+
+This transport is opt-in and supported only for `type = "openai"`. Normal OpenAI/OpenRouter/llama.cpp Chat Completions behavior remains unchanged. Interrupted, failed, incomplete, ambiguous or unauthorized tool responses fail closed. There is no automatic protocol fallback or authentication retry.
+
 ## Debugging AI activity
 
 Pass `--debug` to write every AI activity event as readable, pretty-printed JSON to standard error. The trace includes the prompt and corpus summary, provider request metadata and model responses, agent steps, tool arguments, tool results, and the final answer. Static tool schemas and accumulated conversation history are summarized instead of repeated on every request:

@@ -33,6 +33,8 @@ pub struct ProviderSettings {
     /// Exclusive trusted CA bundle for this provider only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ca_cert_pem: Option<String>,
+    #[serde(default)]
+    pub responses_api: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -105,7 +107,8 @@ impl Config {
             self.generation.timeout_seconds,
             self.generation.max_output_tokens,
         )?
-        .with_ca_cert_pem(self.provider.ca_cert_pem.clone())
+        .with_ca_cert_pem(self.provider.ca_cert_pem.clone())?
+        .with_responses_api(self.provider.responses_api)
     }
 
     pub fn save_to(&self, path: &Path) -> Result<()> {
@@ -189,6 +192,7 @@ pub fn interactive_setup() -> Result<PathBuf> {
             api_key,
             model,
             base_url,
+            responses_api: existing_provider.is_some_and(|config| config.provider.responses_api),
             ca_cert_pem: existing_provider.and_then(|config| config.provider.ca_cert_pem.clone()),
         },
         generation: existing.map(|config| config.generation).unwrap_or_default(),
@@ -276,6 +280,7 @@ mod tests {
                 api_key: Some("secret-value".into()),
                 model: "openrouter/auto".into(),
                 ca_cert_pem: None,
+                responses_api: false,
                 base_url: Some("https://openrouter.ai/api/v1".into()),
             },
             generation: GenerationSettings::default(),
@@ -355,6 +360,7 @@ model = "gpt-5.6"
                 api_key: None,
                 model: "local".into(),
                 ca_cert_pem: None,
+                responses_api: false,
                 base_url: Some("http://[::1]:8080/v1".into()),
             },
             generation: GenerationSettings::default(),
@@ -370,6 +376,7 @@ model = "gpt-5.6"
                 api_key: None,
                 model: "gpt-5.4".into(),
                 ca_cert_pem: None,
+                responses_api: false,
                 base_url: None,
             },
             generation: GenerationSettings::default(),

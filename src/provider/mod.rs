@@ -3,6 +3,7 @@ mod github_copilot;
 mod llama_cpp;
 mod openai;
 mod openrouter;
+mod responses;
 
 use std::{fmt, net::IpAddr, str::FromStr, time::Duration};
 
@@ -91,10 +92,40 @@ pub struct ProviderConfig {
     pub api_key: Option<String>,
     pub timeout: Duration,
     pub max_output_tokens: u32,
+    pub responses_api: bool,
     pub(crate) ca_certificates: Vec<reqwest::Certificate>,
 }
 
 impl ProviderConfig {
+    /// Use the streaming Responses transport supported by ChatGPT reverse adapters.
+    pub fn with_responses_api(mut self, enabled: bool) -> Result<Self> {
+        if enabled && self.kind != ProviderKind::Openai {
+            bail!("provider.responses_api is supported only for openai");
+        }
+        if enabled != self.responses_api {
+            let endpoint = self
+                .endpoint
+                .as_mut()
+                .context("Responses transport requires an endpoint")?;
+            let old = if enabled {
+                "/chat/completions"
+            } else {
+                "/responses"
+            };
+            let new = if enabled {
+                "/responses"
+            } else {
+                "/chat/completions"
+            };
+            let prefix = endpoint
+                .path()
+                .strip_suffix(old)
+                .context("invalid provider transport endpoint")?;
+            endpoint.set_path(&format!("{prefix}{new}"));
+        }
+        self.responses_api = enabled;
+        Ok(self)
+    }
     /// Add trust only to this provider, never to the OS or other SDK clients.
     pub fn with_ca_cert_pem(mut self, pem: Option<String>) -> Result<Self> {
         if let Some(pem) = pem {
@@ -184,6 +215,7 @@ impl ProviderConfig {
             timeout: Duration::from_secs(timeout_seconds),
             max_output_tokens,
             ca_certificates: Vec::new(),
+            responses_api: false,
         })
     }
 }

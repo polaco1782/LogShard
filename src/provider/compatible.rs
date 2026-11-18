@@ -36,6 +36,16 @@ impl OpenAiCompatibleClient {
         tools: &[Value],
         activity: &ActivityLog,
     ) -> Result<ModelReply> {
+        if self.config.responses_api {
+            return super::responses::complete(
+                &self.client,
+                &self.config,
+                messages,
+                tools,
+                activity,
+            )
+            .await;
+        }
         let request = ChatRequest {
             model: &self.config.model,
             messages,
